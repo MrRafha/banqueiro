@@ -38,6 +38,7 @@ COGS = [
     "cogs.events_cog",
     "cogs.finances_cog",
     "cogs.balance_cog",
+    "cogs.raids_cog",
 ]
 
 

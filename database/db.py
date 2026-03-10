@@ -98,6 +98,17 @@ async def init_db():
                 note       TEXT,
                 created_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS raids (
+                message_id     TEXT PRIMARY KEY,
+                guild_id       TEXT NOT NULL,
+                tipo           TEXT NOT NULL,
+                titulo         TEXT NOT NULL,
+                descricao      TEXT NOT NULL,
+                data           TEXT NOT NULL,
+                horario        TEXT NOT NULL,
+                selected_roles TEXT NOT NULL
+            );
         """)
         # Migrate: add log_channel_id if it doesn't exist yet
         try:
@@ -112,6 +123,24 @@ async def init_db():
             await db.commit()
         except Exception:
             pass  # column already exists
+
+        # Migrate: create raids table if it doesn't exist yet (added later)
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS raids (
+                    message_id     TEXT PRIMARY KEY,
+                    guild_id       TEXT NOT NULL,
+                    tipo           TEXT NOT NULL,
+                    titulo         TEXT NOT NULL,
+                    descricao      TEXT NOT NULL,
+                    data           TEXT NOT NULL,
+                    horario        TEXT NOT NULL,
+                    selected_roles TEXT NOT NULL
+                )
+            """)
+            await db.commit()
+        except Exception:
+            pass  # table already exists
 
 
 # ─── guild_config ─────────────────────────────────────────────────────────────
@@ -507,3 +536,31 @@ async def recover_active_events() -> list:
                WHERE e.status = 'active' AND ep.join_time IS NOT NULL"""
         ) as cur:
             return await cur.fetchall()
+
+
+# ─── raids ────────────────────────────────────────────────────────────────────
+
+async def create_raid(message_id: int, guild_id: int, tipo: str, titulo: str,
+                      descricao: str, data: str, horario: str,
+                      selected_roles_json: str):
+    async with get_db() as db:
+        await db.execute(
+            """INSERT INTO raids (message_id, guild_id, tipo, titulo, descricao, data, horario, selected_roles)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (str(message_id), str(guild_id), tipo, titulo, descricao, data, horario, selected_roles_json),
+        )
+        await db.commit()
+
+
+async def get_raid_by_message(message_id: int) -> aiosqlite.Row | None:
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT * FROM raids WHERE message_id = ?", (str(message_id),)
+        ) as cur:
+            return await cur.fetchone()
+
+
+async def delete_raid(message_id: int):
+    async with get_db() as db:
+        await db.execute("DELETE FROM raids WHERE message_id = ?", (str(message_id),))
+        await db.commit()
