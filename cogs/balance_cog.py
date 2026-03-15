@@ -7,7 +7,7 @@ from database.db import (
     get_guild_config, get_balance, add_balance, set_balance,
     add_guild_balance, subtract_guild_balance, record_transaction,
     atomic_subtract_balance, get_transactions, get_event_history,
-    get_all_balances,
+    get_all_balances, normalize_guild_balances,
 )
 from utils.checks import is_admin, is_member
 from utils.embeds import (
@@ -114,6 +114,19 @@ class BalanceCog(commands.Cog):
         balance = await get_balance(interaction.user.id, interaction.guild_id)
         await interaction.followup.send(
             embed=balance_embed(interaction.user, balance), ephemeral=True
+        )
+
+    @app_commands.command(
+        name="saldo",
+        description="Mostra o saldo de um membro específico. (Admin)",
+    )
+    @app_commands.describe(membro="Membro para consultar o saldo")
+    @is_admin()
+    async def saldo(self, interaction: discord.Interaction, membro: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+        balance = await get_balance(membro.id, interaction.guild_id)
+        await interaction.followup.send(
+            embed=balance_embed(membro, balance), ephemeral=True
         )
 
     @app_commands.command(
@@ -482,6 +495,36 @@ class BalanceCog(commands.Cog):
                 embed.set_footer(text="Velho Covil Bot")
                 first = False
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="normalizar-saldos",
+        description="Remove valores quebrados dos saldos (arredonda para baixo). (Admin)",
+    )
+    @is_admin()
+    async def normalizar_saldos(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        changed, zeroed, removed_total = await normalize_guild_balances(interaction.guild_id)
+
+        await audit_log(
+            self.bot,
+            interaction.guild_id,
+            (
+                f"🧹 {interaction.user.mention} normalizou saldos da guilda. "
+                f"Alterados: {changed} | Zerados: {zeroed} | "
+                f"Frações removidas: {format_silver(removed_total)}"
+            ),
+        )
+
+        await interaction.followup.send(
+            embed=success_embed(
+                "🧹 Normalização de saldos concluída!\n"
+                f"Contas alteradas: **{changed}**\n"
+                f"Contas zeradas: **{zeroed}**\n"
+                f"Frações removidas: **{format_silver(removed_total)}** prata"
+            ),
+            ephemeral=True,
+        )
 
     # ── Error handler ─────────────────────────────────────────────────────────
 

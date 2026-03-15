@@ -9,6 +9,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "velhocovilbot.db")
 # Avoids opening a new SQLite connection on every voice-state-update / reaction.
 _CACHE: dict = {}
 _CACHE_TTL = 5.0  # seconds
+_FLOAT_EPSILON = 1e-6
 
 
 def _cache_get(key):
@@ -367,6 +368,52 @@ async def get_all_balances(guild_id: int) -> list:
             return await cur.fetchall()
 
 
+async def normalize_guild_balances(guild_id: int) -> tuple[int, int, float]:
+    """Normalize all balances for a guild.
+
+    Rules:
+    - Remove fractional part (round down/truncate) for positive balances.
+    - Clamp tiny residuals and negative balances to 0.
+
+    Returns: (changed_rows, zeroed_rows, total_fraction_removed)
+    """
+    changed_rows = 0
+    zeroed_rows = 0
+    removed_total = 0.0
+
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT user_id, balance FROM user_balances WHERE guild_id = ?",
+            (str(guild_id),),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        for row in rows:
+            current = float(row["balance"] or 0)
+            if abs(current) <= _FLOAT_EPSILON:
+                normalized = 0
+            elif current < 0:
+                normalized = 0
+            else:
+                normalized = int(current)
+
+            if abs(current - normalized) > _FLOAT_EPSILON:
+                changed_rows += 1
+                if normalized == 0 and current > 0:
+                    zeroed_rows += 1
+                if current > normalized:
+                    removed_total += (current - normalized)
+
+                await db.execute(
+                    "UPDATE user_balances SET balance = ? WHERE user_id = ? AND guild_id = ?",
+                    (float(normalized), str(row["user_id"]), str(guild_id)),
+                )
+
+        await db.commit()
+
+    return changed_rows, zeroed_rows, removed_total
+
+
 async def add_balance(user_id: int, guild_id: int, amount: float):
     async with get_db() as db:
         await db.execute(
@@ -388,12 +435,22 @@ async def set_balance(user_id: int, guild_id: int, amount: float):
 
 
 async def atomic_subtract_balance(user_id: int, guild_id: int, amount: float) -> bool:
-    """Atomically subtract amount from user balance. Returns False if insufficient."""
+    """Atomically subtract amount from user balance with float-tolerance.
+
+    This avoids false "insufficient funds" caused by tiny float precision errors
+    (for example: stored 0.379999999 vs requested 0.38).
+    """
     async with get_db() as db:
         cur = await db.execute(
-            """UPDATE user_balances SET balance = balance - ?
-               WHERE user_id = ? AND guild_id = ? AND balance >= ?""",
-            (amount, str(user_id), str(guild_id), amount),
+            """UPDATE user_balances
+               SET balance = CASE
+                   WHEN ABS(balance - ?) <= ? THEN 0
+                   ELSE balance - ?
+               END
+               WHERE user_id = ?
+                 AND guild_id = ?
+                 AND balance >= (? - ?)""",
+            (amount, _FLOAT_EPSILON, amount, str(user_id), str(guild_id), amount, _FLOAT_EPSILON),
         )
         await db.commit()
         return cur.rowcount == 1
@@ -417,13 +474,17 @@ async def add_guild_balance(guild_id: int, amount: float):
 
 
 async def subtract_guild_balance(guild_id: int, amount: float) -> bool:
-    """Atomically subtract amount from guild balance. Returns False if insufficient."""
+    """Atomically subtract amount from guild balance with float-tolerance."""
     async with get_db() as db:
         cur = await db.execute(
             """UPDATE guild_config
-               SET guild_balance = guild_balance - ?
-               WHERE guild_id = ? AND COALESCE(guild_balance, 0) >= ?""",
-            (amount, str(guild_id), amount),
+               SET guild_balance = CASE
+                   WHEN ABS(COALESCE(guild_balance, 0) - ?) <= ? THEN 0
+                   ELSE COALESCE(guild_balance, 0) - ?
+               END
+               WHERE guild_id = ?
+                 AND COALESCE(guild_balance, 0) >= (? - ?)""",
+            (amount, _FLOAT_EPSILON, amount, str(guild_id), amount, _FLOAT_EPSILON),
         )
         await db.commit()
         return cur.rowcount == 1

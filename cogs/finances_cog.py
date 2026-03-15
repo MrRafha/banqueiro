@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -18,10 +19,16 @@ from utils.embeds import (
 from utils.formatters import parse_silver, format_silver
 
 
+def _floor_silver(amount: float) -> int:
+    """Always round down silver values and avoid negatives."""
+    return max(0, math.floor(amount or 0))
+
+
 def _compute_splits(participants: list, silver: float, tax_rate: float) -> tuple[list[dict], bool]:
     """Return (splits, equal_fallback). If total_pct==0, distributes equally."""
-    guild_cut = silver * (tax_rate / 100)
-    distributable = silver - guild_cut
+    total_silver = _floor_silver(silver)
+    guild_cut = _floor_silver(total_silver * (tax_rate / 100))
+    distributable = max(0, total_silver - guild_cut)
     total_pct = sum(p["participation_pct"] or 0 for p in participants)
     splits = []
     equal_fallback = total_pct == 0
@@ -33,6 +40,7 @@ def _compute_splits(participants: list, silver: float, tax_rate: float) -> tuple
             pct = 100.0 / n if n > 0 else 0
         else:
             amount = distributable * (pct / total_pct)
+        amount = _floor_silver(amount)
         splits.append({"user_id": p["user_id"], "pct": pct, "amount": amount})
     return splits, equal_fallback
 
@@ -125,7 +133,7 @@ class FinancesCog(commands.Cog):
         await update_event(event_id, status="finalized")
 
         tax_rate = config["tax_rate"] or 0
-        guild_cut = silver * (tax_rate / 100)
+        guild_cut = _floor_silver(_floor_silver(silver) * (tax_rate / 100))
         participants = await get_participants(event_id)
         splits, equal_fallback = _compute_splits(participants, silver, tax_rate)
 
@@ -347,9 +355,8 @@ class FinancesCog(commands.Cog):
 
         config = await get_guild_config(interaction.guild_id)
         tax_rate = (config["tax_rate"] or 0) if config else 0
-        guild_cut = event["silver_amount"] * (tax_rate / 100)
+        guild_cut = _floor_silver(_floor_silver(event["silver_amount"]) * (tax_rate / 100))
         participants = await get_participants(event["id"])
-        splits = _compute_splits(participants, event["silver_amount"], tax_rate)
 
         # Mark finalized first to prevent race if /depositar and button Confirmar used together
         await update_event(event["id"], status="finalized")
